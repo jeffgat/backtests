@@ -34,6 +34,7 @@ qtyStep      = input.float(1.0, "Qty Step", step=0.1)
 // Safety: intended for 5m charts
 // ----------------------------------------------------------------------------------------
 is5m = timeframe.isintraday and timeframe.multiplier == 5
+barClosed = barstate.isconfirmed
 
 // ----------------------------------------------------------------------------------------
 // Session filters (exchange-time consistent)
@@ -157,18 +158,22 @@ if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(
     orbReady := true
 
 // ----------------------------------------------------------------------------------------
-// Signal definitions
-// ----------------------------------------------------------------------------------------
-longBreak  = orbReady and inRTH and close > orbHigh
-shortBreak = orbReady and inRTH and close < orbLow
+// fvg detection using 3-candle pattern (matching test.pine logic):
+// - bar [2] = "before" candle
+// - bar [1] = impulse candle (creates the gap)
+// - bar [0] = "after" candle (confirms gap still exists) - current closed bar
+// bullish fvg: high[2] < low (gap between before candle high and after candle low)
+// bearish fvg: low[2] > high (gap between before candle low and after candle high)
+longFvgTop    = low       // top of the gap (after candle low)
+longFvgBottom = high[2]   // bottom of the gap (before candle high)
+shortFvgTop   = low[2]    // top of the gap (before candle low)
+shortFvgBottom = high     // bottom of the gap (after candle high)
 
-// fvg filter vs 2 bars ago (10m on 5m chart) and outside/or crossing orb
-longFvgTop    = low
-longFvgBottom = high[2]
-shortFvgTop   = low[2]
-shortFvgBottom = high
-longFVG  = longFvgBottom < longFvgTop and longFvgTop > orbHigh
-shortFVG = shortFvgBottom < shortFvgTop and shortFvgBottom < orbLow
+// full fvg validation (matching test.pine):
+// bullish: high[2] < low AND high[2] < high[1] AND low[2] < low
+// bearish: low[2] > high AND low[2] > low[1] AND high[2] > high
+longFVG  = high[2] < low and high[2] < high[1] and low[2] < low and longFvgTop > orbHigh
+shortFVG = low[2] > high and low[2] > low[1] and high[2] > high and shortFvgBottom < orbLow
 
 // entry prices at fvg retest levels
 longEntryPrice  = longEntryStored
@@ -189,12 +194,14 @@ floorToStep(x, step) =>
 // - no other setup active
 // --------------------
 canArmSetup =
-     is5m and inRTH and inEntryWin and orbReady and not hasTradedToday and not isExcludedDate and strategy.position_size == 0 and not (longSetupActive or shortSetupActive)
+     is5m and barClosed and inRTH and inEntryWin and orbReady and not hasTradedToday and not isExcludedDate and strategy.position_size == 0 and not (longSetupActive or shortSetupActive)
 
 // long setup arm
-if canArmSetup and not longFirstFvgFound and longBreak and longFVG
-    rawStop = low[1]  // your rule: sl = low of 1-prior candle of breakout candle
-    entry   = longFvgTop
+// fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
+if canArmSetup and not longFirstFvgFound and longFVG
+    // sl = low of the "before" candle (bar [2])
+    rawStop = low[2]
+    entry   = longFvgTop  // enter at top of fvg (after candle low)
     stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
     riskPts = entry - stop
 
@@ -215,9 +222,11 @@ if canArmSetup and not longFirstFvgFound and longBreak and longFVG
             longFirstFvgFound := true
 
 // short setup arm
-if canArmSetup and not shortFirstFvgFound and shortBreak and shortFVG
-    rawStop = high[1] // your rule: sl = high of 1-prior candle of breakdown candle
-    entry   = shortFvgBottom
+// fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
+if canArmSetup and not shortFirstFvgFound and shortFVG
+    // sl = high of the "before" candle (bar [2])
+    rawStop = high[2]
+    entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
     stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
     riskPts = stop - entry
 
@@ -247,11 +256,16 @@ if strategy.position_size < 0 and na(shortFilledEntry)
 
 // ----------------------------------------------------------------------------------------
 // update breakeven state if halfway point is reached
+// also detect if partial exit has occurred (position size reduced from full qty)
 // ----------------------------------------------------------------------------------------
-if strategy.position_size > 0 and high >= longHalfwayStored
-    longBEActive := true
-if strategy.position_size < 0 and low <= shortHalfwayStored
-    shortBEActive := true
+if strategy.position_size > 0
+    // be activates when price reaches tp1 level OR when position size drops (partial fill)
+    if high >= longHalfwayStored or (strategy.position_size < longQtyStored and longQtyStored > 0)
+        longBEActive := true
+if strategy.position_size < 0
+    // be activates when price reaches tp1 level OR when position size drops (partial fill)
+    if low <= shortHalfwayStored or (math.abs(strategy.position_size) < shortQtyStored and shortQtyStored > 0)
+        shortBEActive := true
 
 // ----------------------------------------------------------------------------------------
 // entry orders (only before trade filled)
@@ -267,28 +281,22 @@ if is5m and inRTH and inEntryWin and not hasTradedToday
 // calculate effective stop based on position size to guarantee max loss = riskUsd
 // ----------------------------------------------------------------------------------------
 if strategy.position_size > 0
-    currentQty = math.abs(strategy.position_size)
-    // calculate hard stop price that limits loss to riskUsd
-    maxLossPoints = riskUsd / (currentQty * syminfo.pointvalue)
-    hardStopPrice = not na(longFilledEntry) ? longFilledEntry - maxLossPoints : longStopStored
-    // use the higher (more conservative) of stored stop and hard stop
-    effectiveStop = math.max(nz(longStopStored, 0), nz(hardStopPrice, 0))
-    // for partial exit, use stored stop; for full exit use effective stop with BE logic
-    strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=effectiveStop, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-    finalStop = longBEActive ? math.max(longEntryStored, effectiveStop) : effectiveStop
-    strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
+    // use actual fill price for BE stop (not the limit order price)
+    beStopPrice = not na(longFilledEntry) ? longFilledEntry : longEntryStored
+    // for partial exit before tp1, use original stop
+    strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    finalStop = longBEActive ? beStopPrice : longStopStored
+    strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
 
 if strategy.position_size < 0
-    currentQty = math.abs(strategy.position_size)
-    // calculate hard stop price that limits loss to riskUsd
-    maxLossPoints = riskUsd / (currentQty * syminfo.pointvalue)
-    hardStopPrice = not na(shortFilledEntry) ? shortFilledEntry + maxLossPoints : shortStopStored
-    // use the lower (more conservative) of stored stop and hard stop
-    effectiveStop = math.min(nz(shortStopStored, 999999), nz(hardStopPrice, 999999))
-    // for partial exit, use stored stop; for full exit use effective stop with BE logic
-    strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=effectiveStop, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-    finalStop = shortBEActive ? math.min(shortEntryStored, effectiveStop) : effectiveStop
-    strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
+    // use actual fill price for BE stop (not the limit order price)
+    beStopPrice = not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored
+    // for partial exit before tp1, use original stop
+    strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
+    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
+    finalStop = shortBEActive ? beStopPrice : shortStopStored
+    strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
 
 // also maintain exits for pending orders (before fill)
 if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
