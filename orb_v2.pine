@@ -205,8 +205,8 @@ canArmSetup =
 // long setup arm
 // fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
 if canArmSetup and not longFirstFvgFound and longFVG
-    // sl = low of the "before" candle (bar [2])
-    rawStop = low[2]
+    // sl = low of the impulse candle (bar [1]) that creates the FVG
+    rawStop = low[1]
     entry   = longFvgTop  // enter at top of fvg (after candle low)
     stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
     riskPts = entry - stop
@@ -231,8 +231,8 @@ if canArmSetup and not longFirstFvgFound and longFVG
 // short setup arm
 // fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
 if canArmSetup and not shortFirstFvgFound and shortFVG
-    // sl = high of the "before" candle (bar [2])
-    rawStop = high[2]
+    // sl = high of the impulse candle (bar [1]) that creates the FVG
+    rawStop = high[1]
     entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
     stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
     riskPts = stop - entry

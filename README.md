@@ -8,3 +8,7 @@
 - while the above is messing with the long term data, 1-2 years back seems to be okay? but it's still going to be inaccurate because my max wins are also 1.1R  - 1.2R when it should be 1.5R.
 
 - so we need to figure out how to get more precise executions bc we don't really run into slippage or spreads this bad.
+
+## ideas
+- had a broken ORB entry script outperforming everything so far
+- it was entering a FVG before it formed. so basically when there's a pump candle, it would enter before the 3rd candle to confirm the FVG closed. (prematurely considering it an FVG).
