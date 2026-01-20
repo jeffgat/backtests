@@ -1,6 +1,6 @@
 //@version=6
 strategy(
-     title              = "ORB V2",
+     title              = "ORB V3",
      overlay            = true,
      initial_capital    = 100000,
      pyramiding         = 0,
@@ -164,34 +164,13 @@ if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(
     orbReady := true
 
 // ----------------------------------------------------------------------------------------
-// minimum fvg size requirement:
-// valid gap must be at least 5 points or 20 ticks (whichever is larger)
-minGapPoints = 10.0
-minGapTicks  = 40
-minGap       = math.max(minGapPoints, minGapTicks * syminfo.mintick)
+// Breakout detection: first candle that closes outside the ORB
+// ----------------------------------------------------------------------------------------
+// Long breakout: candle closes above ORB high
+longBreakout = close > orbHigh
 
-// fvg detection using 3-candle pattern (matching test.pine logic):
-// - bar [2] = "before" candle
-// - bar [1] = impulse candle (creates the gap)
-// - bar [0] = "after" candle (confirms gap still exists) - current closed bar
-// bullish fvg: high[2] < low (gap between before candle high and after candle low)
-// bearish fvg: low[2] > high (gap between before candle low and after candle high)
-longFvgTop    = low       // top of the gap (after candle low)
-longFvgBottom = high[2]   // bottom of the gap (before candle high)
-shortFvgTop   = low[2]    // top of the gap (before candle low)
-shortFvgBottom = high     // bottom of the gap (after candle high)
-longGapSize  = longFvgTop - longFvgBottom
-shortGapSize = shortFvgTop - shortFvgBottom
-
-// full fvg validation (matching test.pine):
-// bullish: high[2] < low AND high[2] < high[1] AND low[2] < low
-// bearish: low[2] > high AND low[2] > low[1] AND high[2] > high
-longFVG  = high[2] < low and high[2] < high[1] and low[2] < low and longFvgTop > orbHigh and longGapSize >= minGap
-shortFVG = low[2] > high and low[2] > low[1] and high[2] > high and shortFvgBottom < orbLow and shortGapSize >= minGap
-
-// entry prices at fvg retest levels
-longEntryPrice  = longEntryStored
-shortEntryPrice = shortEntryStored
+// Short breakdown: candle closes below ORB low
+shortBreakdown = close < orbLow
 
 // ----------------------------------------------------------------------------------------
 // qty rounding helpers
@@ -200,23 +179,20 @@ floorToStep(x, step) =>
     step <= 0 ? x : math.floor(x / step) * step
 
 // ----------------------------------------------------------------------------------------
-// Activate setup on breakout/breakdown candle (store anchored SL/TP/Qty)
+// Market entry on first breakout candle (store anchored SL/TP/Qty and enter immediately)
 // Only if:
 // - within entry window
 // - no trade filled yet today
 // - flat/no position
-// - no other setup active
 // --------------------
-canArmSetup =
-     is5m and barClosed and inRTH and inEntryWin and orbReady and not hasTradedToday and not isExcludedDate and strategy.position_size == 0 and not (longSetupActive or shortSetupActive)
+canEnter =
+     is5m and barClosed and inRTH and inEntryWin and orbReady and not hasTradedToday and not isExcludedDate and strategy.position_size == 0
 
-// long setup arm
-// fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
-if canArmSetup and not longFirstFvgFound and longFVG
-    // sl = low of the impulse candle (bar [1]) that creates the FVG
-    rawStop = low[1]
-    entry   = longFvgTop  // enter at top of fvg (after candle low)
-    stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
+// long market entry on breakout
+// enter at market (close), stop at low of the breakout candle
+if canEnter and not longFirstFvgFound and longBreakout
+    entry   = close  // market entry at candle close
+    stop    = math.min(low, entry - syminfo.mintick)  // stop at low of breakout candle
     riskPts = entry - stop
 
     if riskPts > 0
@@ -232,17 +208,14 @@ if canArmSetup and not longFirstFvgFound and longFVG
             longEntryStored  := entry
             longQtyStored    := qty
             longHalfQty      := halfQty
-            longSetupActive  := true
-            longFirstFvgFound := true
-            longSetupBar     := bar_index  // track when setup armed for retest requirement
+            longFirstFvgFound := true  // prevent additional entries
+            strategy.entry("L", strategy.long, qty=qty)
 
-// short setup arm
-// fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
-if canArmSetup and not shortFirstFvgFound and shortFVG
-    // sl = high of the impulse candle (bar [1]) that creates the FVG
-    rawStop = high[1]
-    entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
-    stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
+// short market entry on breakdown
+// enter at market (close), stop at high of the breakdown candle
+if canEnter and not shortFirstFvgFound and shortBreakdown
+    entry   = close  // market entry at candle close
+    stop    = math.max(high, entry + syminfo.mintick)  // stop at high of breakdown candle
     riskPts = stop - entry
 
     if riskPts > 0
@@ -258,9 +231,8 @@ if canArmSetup and not shortFirstFvgFound and shortFVG
             shortEntryStored  := entry
             shortQtyStored    := qty
             shortHalfQty      := halfQty
-            shortSetupActive  := true
-            shortFirstFvgFound := true
-            shortSetupBar     := bar_index  // track when setup armed for retest requirement
+            shortFirstFvgFound := true  // prevent additional entries
+            strategy.entry("S", strategy.short, qty=qty)
 
 // ----------------------------------------------------------------------------------------
 // track actual entry fill price for hard stop calculation
@@ -283,15 +255,6 @@ if strategy.position_size < 0
     if low <= shortHalfwayStored or (math.abs(strategy.position_size) < shortQtyStored and shortQtyStored > 0)
         shortBEActive := true
 
-// ----------------------------------------------------------------------------------------
-// entry orders (only before trade filled, and only AFTER setup bar for true retest)
-// ----------------------------------------------------------------------------------------
-if is5m and inRTH and inEntryWin and not hasTradedToday
-    // only place entry order on bars AFTER the FVG formed (require price to revisit)
-    if longSetupActive and bar_index > longSetupBar
-        strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryPrice)
-    if shortSetupActive and bar_index > shortSetupBar
-        strategy.entry("S", strategy.short, qty=shortQtyStored, limit=shortEntryPrice)
 
 // ----------------------------------------------------------------------------------------
 // exit orders - unified approach with hard dollar stop
@@ -315,37 +278,6 @@ if strategy.position_size < 0
     finalStop = shortBEActive ? beStopPrice : shortStopStored
     strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
 
-// also maintain exits for pending orders (before fill, only after setup bar)
-if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
-    if longSetupActive and bar_index > longSetupBar
-        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-        strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
-    if shortSetupActive and bar_index > shortSetupBar
-        strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-        strategy.exit("S-F", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
-
-// ----------------------------------------------------------------------------------------
-// Cancel pending orders after cutoff and after RTH
-// ----------------------------------------------------------------------------------------
-if afterCutoff
-    strategy.cancel("L")
-    strategy.cancel("S")
-    longSetupActive := false
-    shortSetupActive := false
-    longEntryStored := na
-    shortEntryStored := na
-    longSetupBar := na
-    shortSetupBar := na
-
-if not inRTH
-    strategy.cancel("L")
-    strategy.cancel("S")
-    longSetupActive := false
-    shortSetupActive := false
-    longEntryStored := na
-    shortEntryStored := na
-    longSetupBar := na
-    shortSetupBar := na
 
 // ----------------------------------------------------------------------------------------
 // flat at 15:50 - close any remaining position at market
