@@ -66,8 +66,8 @@ var float orbHigh  = na
 var float orbLow   = na
 var bool  orbReady = false
 
-// max 2 FILLED trades per day
-var int tradesToday = 0
+// 1 FILLED trade per day
+var bool hasTradedToday = false
 var int closedTradesAtDayStart = 0
 
 // Persistent setup states (so retest fills are not missed)
@@ -99,9 +99,6 @@ var float shortFilledEntry = na  // actual fill price for hard stop calc
 var int longSetupBar  = na
 var int shortSetupBar = na
 
-// track bar when last trade completed (for requiring fresh FVG on subsequent trades)
-var int lastTradeCompletedBar = na
-
 // ----------------------------------------------------------------------------------------
 // Reset on new day
 // ----------------------------------------------------------------------------------------
@@ -109,7 +106,7 @@ if newDay
     orbHigh := na
     orbLow  := na
     orbReady := false
-    tradesToday := 0
+    hasTradedToday := false
     closedTradesAtDayStart := strategy.closedtrades
 
     longSetupActive := false
@@ -134,44 +131,26 @@ if newDay
     shortFilledEntry := na
     longSetupBar := na
     shortSetupBar := na
-    lastTradeCompletedBar := na
 
     strategy.cancel("L")
     strategy.cancel("S")
 
 // ----------------------------------------------------------------------------------------
 // Detect any trade occurred today (robust, incl. same-bar round trips)
-// count trades by tracking closed trades since day start
 // ----------------------------------------------------------------------------------------
-currentTradeCount = strategy.closedtrades - closedTradesAtDayStart + strategy.opentrades
+tradeHappenedToday =
+     (strategy.opentrades > 0) or (strategy.closedtrades > closedTradesAtDayStart)
 
-// when a new trade is detected (count increased), reset active setup and increment counter
-if currentTradeCount > tradesToday
-    tradesToday := currentTradeCount
-    // mark when this trade completed (for requiring fresh FVG on next trade)
-    lastTradeCompletedBar := bar_index
-    // cancel current pending orders and reset setup for next potential trade
+if tradeHappenedToday and not hasTradedToday
+    hasTradedToday := true
     longSetupActive := false
     shortSetupActive := false
+    longFirstFvgFound := true
+    shortFirstFvgFound := true
     longEntryStored := na
     shortEntryStored := na
     strategy.cancel("L")
     strategy.cancel("S")
-    // reset FVG flags to allow finding new setups, or block if we've hit the daily limit
-    if tradesToday >= 2
-        longFirstFvgFound := true
-        shortFirstFvgFound := true
-    else
-        // allow new FVG detection for next trade
-        longFirstFvgFound := false
-        shortFirstFvgFound := false
-        // reset trade-specific state for next trade
-        longBEActive := false
-        shortBEActive := false
-        longFilledEntry := na
-        shortFilledEntry := na
-        longSetupBar := na
-        shortSetupBar := na
 
 // ----------------------------------------------------------------------------------------
 // Build ORB (09:30–09:45)
@@ -224,22 +203,18 @@ floorToStep(x, step) =>
 // Activate setup on breakout/breakdown candle (store anchored SL/TP/Qty)
 // Only if:
 // - within entry window
-// - less than 2 trades today
+// - no trade filled yet today
 // - flat/no position
 // - no other setup active
-// - for 2nd trade: FVG must form AFTER previous trade completed (fresh FVG not traded through)
 // --------------------
-// require fresh FVG: either no trade yet (na) or current bar is after last trade completed
-isFreshFvg = na(lastTradeCompletedBar) or bar_index > lastTradeCompletedBar
-
 canArmSetup =
-     is5m and barClosed and inRTH and inEntryWin and orbReady and tradesToday < 2 and not isExcludedDate and strategy.position_size == 0 and not (longSetupActive or shortSetupActive) and isFreshFvg
+     is5m and barClosed and inRTH and inEntryWin and orbReady and not hasTradedToday and not isExcludedDate and strategy.position_size == 0 and not (longSetupActive or shortSetupActive)
 
 // long setup arm
 // fvg validity already checks longFvgTop > orbHigh, so no separate break check needed
 if canArmSetup and not longFirstFvgFound and longFVG
-    // sl = low of the impulse candle (bar [1]) that creates the FVG
-    rawStop = low[1]
+    // sl = low of the "before" candle (bar [2]) for wider stop
+    rawStop = low[2]
     entry   = longFvgTop  // enter at top of fvg (after candle low)
     stop    = math.min(rawStop, entry - syminfo.mintick)  // enforce valid side
     riskPts = entry - stop
@@ -264,8 +239,8 @@ if canArmSetup and not longFirstFvgFound and longFVG
 // short setup arm
 // fvg validity already checks shortFvgBottom < orbLow, so no separate break check needed
 if canArmSetup and not shortFirstFvgFound and shortFVG
-    // sl = high of the impulse candle (bar [1]) that creates the FVG
-    rawStop = high[1]
+    // sl = high of the "before" candle (bar [2]) for wider stop
+    rawStop = high[2]
     entry   = shortFvgBottom  // enter at bottom of fvg (after candle high)
     stop    = math.max(rawStop, entry + syminfo.mintick) // enforce valid side
     riskPts = stop - entry
@@ -313,7 +288,7 @@ if strategy.position_size < 0
 // ----------------------------------------------------------------------------------------
 setupTimeoutBars = 12
 
-if is5m and inRTH and tradesToday < 2 and strategy.position_size == 0
+if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
     // cancel long setup if 30 minutes passed without fill
     if longSetupActive and bar_index >= longSetupBar + setupTimeoutBars
         strategy.cancel("L")
@@ -328,9 +303,9 @@ if is5m and inRTH and tradesToday < 2 and strategy.position_size == 0
         shortSetupBar := na
 
 // ----------------------------------------------------------------------------------------
-// entry orders (only before max trades reached, and only AFTER setup bar for true retest)
+// entry orders (only before trade filled, and only AFTER setup bar for true retest)
 // ----------------------------------------------------------------------------------------
-if is5m and inRTH and inEntryWin and tradesToday < 2
+if is5m and inRTH and inEntryWin and not hasTradedToday
     // only place entry order on bars AFTER the FVG formed (require price to revisit)
     if longSetupActive and bar_index > longSetupBar
         strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryPrice)
@@ -360,7 +335,7 @@ if strategy.position_size < 0
     strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
 
 // also maintain exits for pending orders (before fill, only after setup bar)
-if is5m and inRTH and tradesToday < 2 and strategy.position_size == 0
+if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
     if longSetupActive and bar_index > longSetupBar
         strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
         strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
