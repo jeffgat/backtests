@@ -14,8 +14,8 @@
 - it was entering a FVG before it formed. so basically when there's a pump candle, it would enter before the 3rd candle to confirm the FVG closed. (prematurely considering it an FVG).
 
 
-## current best performer
-HEAD
+## current viable strats
+VIABLE_
 
 ## ideas logged
 https://docs.google.com/spreadsheets/d/1gnbeBbC-s_uHcyZoEIc2tIf_R9x73vnHL5uxZe2FrC0/edit?usp=sharing
