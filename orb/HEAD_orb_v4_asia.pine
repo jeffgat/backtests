@@ -1,6 +1,6 @@
 //@version=6
 strategy(
-     title              = "ORB V4",
+     title              = "ORB V4 ASIA",
      overlay            = true,
      initial_capital    = 100000,
      pyramiding         = 0,
