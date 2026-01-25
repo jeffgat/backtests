@@ -219,6 +219,8 @@ var float gapTop    = na
 var float gapBottom = na
 var bool  gapIsBullish = false
 var int   gapBar    = na
+var float gapImpulseLow  = na  // Low of the impulse candle (for long stop)
+var float gapImpulseHigh = na  // High of the impulse candle (for short stop)
 
 // Position tracking
 var float longStopStored     = na
@@ -285,6 +287,8 @@ if newDay
     gapBottom := na
     gapIsBullish := false
     gapBar := na
+    gapImpulseLow := na
+    gapImpulseHigh := na
 
     // Reset position tracking
     longStopStored := na
@@ -422,6 +426,8 @@ if waitingForGap and barClosed and isIntraday
         gapBottom := bullishGapBottom
         gapIsBullish := true
         gapBar := bar_index
+        gapImpulseLow := low[1]   // Store impulse candle low
+        gapImpulseHigh := high[1] // Store impulse candle high
         waitingForGap := false
         waitingForInversion := true
 
@@ -431,6 +437,8 @@ if waitingForGap and barClosed and isIntraday
         gapBottom := bearishGapBottom
         gapIsBullish := false
         gapBar := bar_index
+        gapImpulseLow := low[1]   // Store impulse candle low
+        gapImpulseHigh := high[1] // Store impulse candle high
         waitingForGap := false
         waitingForInversion := true
 
@@ -451,6 +459,8 @@ if barsAfterSweep >= maxBarsAfterSweep
     gapBottom := na
     gapIsBullish := false
     gapBar := na
+    gapImpulseLow := na
+    gapImpulseHigh := na
 
 // ----------------------------------------------------------------------------------------
 // Qty Rounding Helper
@@ -509,7 +519,7 @@ if waitingForInversion and barClosed and isIntraday and inEntryWin and strategy.
     if not gapIsBullish and close > gapTop
         // Entry calculation
         entry = close
-        stop = gapBottom  // Stop at low of gap
+        stop = gapImpulseLow  // Stop at low of impulse candle
         riskPts = entry - stop
 
         if riskPts > 0
@@ -610,6 +620,8 @@ if afterCutoff
     gapBottom := na
     gapIsBullish := false
     gapBar := na
+    gapImpulseLow := na
+    gapImpulseHigh := na
 
 // ----------------------------------------------------------------------------------------
 // Flat at 15:50

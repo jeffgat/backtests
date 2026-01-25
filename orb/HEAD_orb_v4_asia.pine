@@ -1,6 +1,6 @@
 //@version=6
 strategy(
-     title              = "ORB V4 ASIA",
+     title              = "ORB V4",
      overlay            = true,
      initial_capital    = 100000,
      pyramiding         = 0,
@@ -30,9 +30,11 @@ flatWindow   = input.session("0645-0700", "Flat window (close at 15:50, ny time)
 minQty       = input.float(1.0, "Min Qty", step=0.1)
 qtyStep      = input.float(1.0, "Qty Step", step=0.1)
 
-// FVG minimum gap size filter (gap must be at least this size to be valid)
+// FVG gap size filter (gap must be within this range to be valid)
 minGapPoints = input.float(2.0, "Min Gap (points)", step=1.0, tooltip="Minimum gap size in points")
-minGapTicks  = input.int(10, "Min Gap (ticks)", step=5, tooltip="Minimum gap size in ticks - uses whichever is larger")
+minGapTicks  = input.int(8, "Min Gap (ticks)", step=5, tooltip="Minimum gap size in ticks - uses whichever is larger")
+maxGapPoints = input.float(50.0, "Max Gap (points)", step=1.0, tooltip="Maximum gap size in points (0 = no limit)")
+maxGapTicks  = input.int(200, "Max Gap (ticks)", step=5, tooltip="Maximum gap size in ticks (0 = no limit) - uses whichever is smaller when both set")
 
 // Breakeven offset (ticks above/below entry to cover commission and ensure small profit)
 beOffsetTicks = input.int(4, "BE Offset (ticks)", step=1, tooltip="Ticks above entry for BE stop to cover commission")
@@ -175,9 +177,13 @@ if not inORB and inRTH and is5m and not orbReady and not na(orbHigh) and not na(
     orbReady := true
 
 // ----------------------------------------------------------------------------------------
-// minimum fvg size requirement (configurable via inputs)
+// fvg size requirements (configurable via inputs)
 // ----------------------------------------------------------------------------------------
 minGap = math.max(minGapPoints, minGapTicks * syminfo.mintick)
+// maxGap: use the smaller of the two if both are set, ignore if 0
+maxGapFromPoints = maxGapPoints > 0 ? maxGapPoints : na
+maxGapFromTicks  = maxGapTicks > 0 ? maxGapTicks * syminfo.mintick : na
+maxGap = not na(maxGapFromPoints) and not na(maxGapFromTicks) ? math.min(maxGapFromPoints, maxGapFromTicks) : nz(maxGapFromPoints, nz(maxGapFromTicks, na))
 
 // fvg detection using 3-candle pattern (matching test.pine logic):
 // - bar [2] = "before" candle
@@ -195,8 +201,10 @@ shortGapSize = shortFvgTop - shortFvgBottom
 // full fvg validation (matching test.pine):
 // bullish: high[2] < low AND high[2] < high[1] AND low[2] < low
 // bearish: low[2] > high AND low[2] > low[1] AND high[2] > high
-longFVG  = high[2] < low and high[2] < high[1] and low[2] < low and longFvgTop > orbHigh and longGapSize >= minGap
-shortFVG = low[2] > high and low[2] > low[1] and high[2] > high and shortFvgBottom < orbLow and shortGapSize >= minGap
+longGapValid  = longGapSize >= minGap and (na(maxGap) or longGapSize <= maxGap)
+shortGapValid = shortGapSize >= minGap and (na(maxGap) or shortGapSize <= maxGap)
+longFVG  = high[2] < low and high[2] < high[1] and low[2] < low and longFvgTop > orbHigh and longGapValid
+shortFVG = low[2] > high and low[2] > low[1] and high[2] > high and shortFvgBottom < orbLow and shortGapValid
 
 // BE offset calculation (beOffsetTicks is configurable via inputs)
 beOffset = beOffsetTicks * syminfo.mintick
@@ -325,34 +333,34 @@ if is5m and inRTH and inEntryWin and not hasTradedToday
 
 // ----------------------------------------------------------------------------------------
 // exit orders - unified approach with hard dollar stop
-// single contract: skip TP1, use BE stop after tp1 level reached, exit at TP2
-// multi contract: partial exit at TP1, then BE stop for remainder
+// calculate effective stop based on position size to guarantee max loss = riskUsd
 // ----------------------------------------------------------------------------------------
 if strategy.position_size > 0
-    // use actual fill price for BE stop, +offset to cover commission and ensure profit
-    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + beOffset
+    // use actual fill price for BE stop, +1 point to cover commission and ensure profit
+    beStopPrice = (not na(longFilledEntry) ? longFilledEntry : longEntryStored) + 1.0
+    // for partial exit before tp1, use original stop
+    strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
     finalStop = longBEActive ? beStopPrice : longStopStored
-
-    if longSingleContract
-        // single contract: no partial TP, just BE stop after tp1 level + full TP2
-        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
-    else
-        // multi contract: partial exit at TP1, then BE for remainder
-        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
-        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
+    strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss="l-be", comment_profit="l-tp2")
 
 if strategy.position_size < 0
-    // use actual fill price for BE stop, -offset to cover commission and ensure profit
-    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - beOffset
+    // use actual fill price for BE stop, -1 point to cover commission and ensure profit
+    beStopPrice = (not na(shortFilledEntry) ? shortFilledEntry : shortEntryStored) - 1.0
+    // for partial exit before tp1, use original stop
+    strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
+    // for remaining position, use BE stop if tp1 was hit, otherwise original stop
     finalStop = shortBEActive ? beStopPrice : shortStopStored
+    strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss="s-be", comment_profit="s-tp2")
 
-    if shortSingleContract
-        // single contract: no partial TP, just BE stop after tp1 level + full TP2
-        strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
-    else
-        // multi contract: partial exit at TP1, then BE for remainder
+// also maintain exits for pending orders (before fill, only after setup bar)
+if is5m and inRTH and not hasTradedToday and strategy.position_size == 0
+    if longSetupActive and bar_index > longSetupBar
+        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+        strategy.exit("L-F", from_entry="L", stop=longStopStored, limit=longTargetStored, comment_loss="l-sl", comment_profit="l-tp2")
+    if shortSetupActive and bar_index > shortSetupBar
         strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
-        strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
+        strategy.exit("S-F", from_entry="S", stop=shortStopStored, limit=shortTargetStored, comment_loss="s-sl", comment_profit="s-tp2")
 
 // ----------------------------------------------------------------------------------------
 // Cancel pending orders after cutoff and after RTH
