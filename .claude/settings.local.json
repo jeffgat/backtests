@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Skill(pine-debugger)",
-      "Skill(pine-debugger:*)"
+      "Skill(pine-debugger:*)",
+      "WebFetch(domain:www.cmegroup.com)"
     ]
   }
 }
