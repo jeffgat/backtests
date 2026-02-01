@@ -40,6 +40,20 @@ maxGapTicks  = input.int(400, "Max Gap (ticks)", step=5, tooltip="Maximum gap si
 beOffsetTicks = input.int(4, "BE Offset (ticks)", step=1, tooltip="Ticks above entry for BE stop to cover commission")
 
 // ----------------------------------------------------------------------------------------
+// Half-Day Early Close Dates
+// CME equity futures close at 1:00 PM ET on these dates.
+// Update this list annually — check CME holiday calendar.
+// ----------------------------------------------------------------------------------------
+halfDayFlatWindow = input.session("1250-1300", "Half-Day Flat window (ny time)")
+// Format: YYYYMMDD — add/remove dates as needed
+halfDay1 = input.string("20250703", "Half-Day 1 (YYYYMMDD)", tooltip="Day before July 4th")
+halfDay2 = input.string("20251128", "Half-Day 2 (YYYYMMDD)", tooltip="Day after Thanksgiving")
+halfDay3 = input.string("20251224", "Half-Day 3 (YYYYMMDD)", tooltip="Christmas Eve")
+halfDay4 = input.string("20250109", "Half-Day 4 (YYYYMMDD)", tooltip="National Day of Mourning (one-off)")
+halfDay5 = input.string("20260119", "Half-Day 5 (YYYYMMDD)", tooltip="MLK Day 2026")
+halfDay6 = input.string("", "Half-Day 6 (YYYYMMDD)", tooltip="Leave blank if unused")
+
+// ----------------------------------------------------------------------------------------
 // Safety: intended for 5m charts
 // ----------------------------------------------------------------------------------------
 is5m = timeframe.isintraday and timeframe.multiplier == 5
@@ -52,6 +66,7 @@ inRTH      = not na(time(timeframe.period, sessionRTH, "America/New_York"))
 inORB      = not na(time(timeframe.period, orbSession, "America/New_York"))
 inEntryWin = not na(time(timeframe.period, entryWindow, "America/New_York"))
 inFlatWin  = not na(time(timeframe.period, flatWindow, "America/New_York"))
+inHalfDayFlatWin = not na(time(timeframe.period, halfDayFlatWindow, "America/New_York"))
 
 afterCutoff = inRTH and not inEntryWin
 
@@ -67,6 +82,10 @@ currentYear  = year(time, "America/New_York")
 
 // dec 18, 2024 - exclude due to data issue
 isExcludedDate = currentYear == 2024 and currentMonth == 12 and currentDay == 18
+
+// Half-day detection
+todayStr = str.format("{0,number,0000}{1,number,00}{2,number,00}", currentYear, currentMonth, currentDay)
+isHalfDay = todayStr == halfDay1 or todayStr == halfDay2 or todayStr == halfDay3 or todayStr == halfDay4 or (halfDay5 != "" and todayStr == halfDay5) or (halfDay6 != "" and todayStr == halfDay6)
 
 // ----------------------------------------------------------------------------------------
 // ORB state
@@ -304,10 +323,9 @@ if strategy.position_size > 0
         if not na(longHalfwayStored) and high >= longHalfwayStored
             longBEActive := true
     else
-        // multi contract: BE activates when price reaches tp1 level OR partial TP1 fill occurred
-        // check longFilledEntry is set to ensure full entry filled before detecting position reduction as TP1
+        // multi contract: BE activates when partial TP1 fill occurred (position reduced)
         positionReduced = strategy.position_size < longQtyStored and longQtyStored > 0 and not na(longFilledEntry)
-        if (not na(longHalfwayStored) and high >= longHalfwayStored) or positionReduced
+        if positionReduced
             longBEActive := true
 if strategy.position_size < 0
     if shortSingleContract
@@ -315,16 +333,15 @@ if strategy.position_size < 0
         if not na(shortHalfwayStored) and low <= shortHalfwayStored
             shortBEActive := true
     else
-        // multi contract: BE activates when price reaches tp1 level OR partial TP1 fill occurred
-        // check shortFilledEntry is set to ensure full entry filled before detecting position reduction as TP1
+        // multi contract: BE activates when partial TP1 fill occurred (position reduced)
         positionReduced = math.abs(strategy.position_size) < shortQtyStored and shortQtyStored > 0 and not na(shortFilledEntry)
-        if (not na(shortHalfwayStored) and low <= shortHalfwayStored) or positionReduced
+        if positionReduced
             shortBEActive := true
 
 // ----------------------------------------------------------------------------------------
 // entry orders (only before trade filled, and only AFTER setup bar for true retest)
 // ----------------------------------------------------------------------------------------
-if is5m and inRTH and inEntryWin and not hasTradedToday
+if is5m and inRTH and inEntryWin and not hasTradedToday and strategy.position_size == 0
     // only place entry order on bars AFTER the FVG formed (require price to revisit)
     if longSetupActive and bar_index > longSetupBar
         strategy.entry("L", strategy.long, qty=longQtyStored, limit=longEntryStored)
@@ -346,7 +363,7 @@ if strategy.position_size > 0
         strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
     else
         // multi contract: partial exit at TP1, then BE for remainder
-        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=longStopStored, limit=longHalfwayStored, comment_loss="l-sl", comment_profit="l-tp1")
+        strategy.exit("L-P", from_entry="L", qty=longHalfQty, stop=finalStop, limit=longHalfwayStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp1")
         strategy.exit("L-F", from_entry="L", stop=finalStop, limit=longTargetStored, comment_loss=longBEActive ? "l-be" : "l-sl", comment_profit="l-tp2")
 
 if strategy.position_size < 0
@@ -359,7 +376,7 @@ if strategy.position_size < 0
         strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
     else
         // multi contract: partial exit at TP1, then BE for remainder
-        strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=shortStopStored, limit=shortHalfwayStored, comment_loss="s-sl", comment_profit="s-tp1")
+        strategy.exit("S-P", from_entry="S", qty=shortHalfQty, stop=finalStop, limit=shortHalfwayStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp1")
         strategy.exit("S-F", from_entry="S", stop=finalStop, limit=shortTargetStored, comment_loss=shortBEActive ? "s-be" : "s-sl", comment_profit="s-tp2")
 
 // ----------------------------------------------------------------------------------------
@@ -386,10 +403,11 @@ if not inRTH
     shortSetupBar := na
 
 // ----------------------------------------------------------------------------------------
-// flat at 15:50 - close any remaining position at market
+// flat at 15:50 (or 12:50 on half-days) - close any remaining position at market
 // this should rarely happen since stops/targets should have filled
 // ----------------------------------------------------------------------------------------
-if inFlatWin and strategy.position_size != 0
+flatNow = isHalfDay ? inHalfDayFlatWin : inFlatWin
+if flatNow and strategy.position_size != 0
     if strategy.position_size > 0
         strategy.close("L", comment="eod-flat")
     if strategy.position_size < 0
