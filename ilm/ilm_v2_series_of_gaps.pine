@@ -35,8 +35,10 @@ londonSession = input.session("0200-0500", "London KZ (NY time)")
 // Strategy Settings
 maxBarsAfterSweep = input.int(36, "Max bars after sweep", minval=1, maxval=50, tooltip="Setup expires if no entry within this many bars")
 minGapPts         = input.float(5.0, "Min Gap Size (pts)", step=1.0, minval=0, tooltip="Minimum gap size in points to qualify as valid")
+maxGapPts         = input.float(40.0, "Max Gap Size (pts)", step=1.0, minval=0, tooltip="Maximum gap size in points — gaps larger than this are invalidated")
 gapWindowBars     = input.int(10, "Gap Window (bars)", minval=1, maxval=50, tooltip="Only use gaps formed within this many bars before/after the sweep candle")
 maxTradesPerDay   = input.int(3, "Max Trades Per Day", minval=1, maxval=10, tooltip="Maximum number of trades allowed per day")
+maxCandlesInGapSeries = input.int(4, "Max Candles in Gap Series", minval=1, maxval=10, tooltip="If this many or more adjacent gaps form in a series, the setup is invalidated")
 
 // Sweep Type Toggles
 useAsiaHighSweeps   = input.bool(true, "Use Asia High Sweeps", tooltip="Enable short setups from Asia high sweeps")
@@ -286,6 +288,10 @@ var int   gapBar    = na
 var float gapImpulseLow  = na  // Low of the impulse candle (for long stop)
 var float gapImpulseHigh = na  // High of the impulse candle (for short stop)
 
+// Gap series collection state
+var bool  collectingGaps   = false  // True while checking for adjacent gaps
+var int   gapSeriesCount   = 0      // Number of gaps in the current series
+
 // Position tracking
 var float longStopStored     = na
 var float longTargetStored   = na
@@ -365,6 +371,8 @@ if newDay
     // Reset setup state
     waitingForGap := false
     waitingForInversion := false
+    collectingGaps := false
+    gapSeriesCount := 0
     sweepType := na
     sweepSource := na
     sweepBar := na
@@ -437,7 +445,7 @@ if barClosed and isIntraday
         swingLow1HSweepBar := bar_index
 
 // Only start setups during entry window when not already in a setup and under daily trade limit
-canDetectSweepBase = isIntraday and barClosed and inEntryWin and strategy.position_size == 0 and not waitingForGap and not waitingForInversion and tradesToday < maxTradesPerDay
+canDetectSweepBase = isIntraday and barClosed and inEntryWin and strategy.position_size == 0 and not waitingForGap and not waitingForInversion and not collectingGaps and tradesToday < maxTradesPerDay
 
 // Asia High sweep -> bearish setup (looking for short)
 canDetectAsiaSweep = canDetectSweepBase and not na(asiaHigh) and not na(asiaLow)
@@ -564,13 +572,13 @@ if canDetect1HSwingSweep and swingLow1HSwept and not swingLow1HTraded and not na
 // ----------------------------------------------------------------------------------------
 // Bullish Gap: gap between bar[2] high and bar[0] low
 bullishGapSize = low - high[2]
-bullishGapDetected = high[2] < low and high[2] < high[1] and low[2] < low and bullishGapSize >= minGapPts
+bullishGapDetected = high[2] < low and high[2] < high[1] and low[2] < low and bullishGapSize >= minGapPts and bullishGapSize <= maxGapPts
 bullishGapTop = low         // top of gap (current bar low)
 bullishGapBottom = high[2]  // bottom of gap (bar[2] high)
 
 // Bearish Gap: gap between bar[2] low and bar[0] high
 bearishGapSize = low[2] - high
-bearishGapDetected = low[2] > high and low[2] > low[1] and high[2] > high and bearishGapSize >= minGapPts
+bearishGapDetected = low[2] > high and low[2] > low[1] and high[2] > high and bearishGapSize >= minGapPts and bearishGapSize <= maxGapPts
 bearishGapTop = low[2]      // top of gap (bar[2] low)
 bearishGapBottom = high     // bottom of gap (current bar high)
 
@@ -590,7 +598,8 @@ if waitingForGap and barClosed and isIntraday
         gapImpulseLow := low[1]   // Store impulse candle low
         gapImpulseHigh := high[1] // Store impulse candle high
         waitingForGap := false
-        waitingForInversion := true
+        collectingGaps := true
+        gapSeriesCount := 1
 
     // For bullish setup (after low sweep): wait for BEARISH Gap
     if sweepType == "bullish" and bearishGapDetected and gapWithinWindow
@@ -601,17 +610,75 @@ if waitingForGap and barClosed and isIntraday
         gapImpulseLow := low[1]   // Store impulse candle low
         gapImpulseHigh := high[1] // Store impulse candle high
         waitingForGap := false
-        waitingForInversion := true
+        collectingGaps := true
+        gapSeriesCount := 1
+
+// ----------------------------------------------------------------------------------------
+// Gap Series Collection (check for adjacent gaps on subsequent bars)
+// ----------------------------------------------------------------------------------------
+if collectingGaps and barClosed and isIntraday
+    // Skip the bar where the first gap was just detected (gapBar == bar_index)
+    if gapBar < bar_index
+        // Check for a new gap of the SAME TYPE that is PRICE-ADJACENT to the combined gap
+        foundAdjacent = false
+
+        if gapIsBullish and bullishGapDetected
+            // Check adjacency: new gap overlaps or touches the combined gap
+            if bullishGapBottom <= gapTop and bullishGapTop >= gapBottom
+                // Merge: extend combined gap boundaries
+                gapTop := math.max(gapTop, bullishGapTop)
+                gapBottom := math.min(gapBottom, bullishGapBottom)
+                gapImpulseHigh := math.max(gapImpulseHigh, high[1])
+                gapImpulseLow := math.min(gapImpulseLow, low[1])
+                gapBar := bar_index
+                gapSeriesCount += 1
+                foundAdjacent := true
+
+        if not gapIsBullish and bearishGapDetected
+            // Check adjacency: new gap overlaps or touches the combined gap
+            if bearishGapBottom <= gapTop and bearishGapTop >= gapBottom
+                // Merge: extend combined gap boundaries
+                gapTop := math.max(gapTop, bearishGapTop)
+                gapBottom := math.min(gapBottom, bearishGapBottom)
+                gapImpulseHigh := math.max(gapImpulseHigh, high[1])
+                gapImpulseLow := math.min(gapImpulseLow, low[1])
+                gapBar := bar_index
+                gapSeriesCount += 1
+                foundAdjacent := true
+
+        // Check if series has too many gaps — immediately invalidate
+        if gapSeriesCount >= maxCandlesInGapSeries
+            collectingGaps := false
+            gapSeriesCount := 0
+            waitingForGap := false
+            waitingForInversion := false
+            sweepType := na
+            sweepSource := na
+            sweepBar := na
+            barsAfterSweep := 0
+            gapTop := na
+            gapBottom := na
+            gapIsBullish := false
+            gapBar := na
+            gapImpulseLow := na
+            gapImpulseHigh := na
+        else if not foundAdjacent
+            // No adjacent gap on this bar — finalize the series
+            collectingGaps := false
+            // Series count is under the limit, proceed to inversion waiting
+            waitingForInversion := true
 
 // ----------------------------------------------------------------------------------------
 // Setup Expiration (12 bars after sweep)
 // ----------------------------------------------------------------------------------------
-if (waitingForGap or waitingForInversion) and barClosed and isIntraday
+if (waitingForGap or waitingForInversion or collectingGaps) and barClosed and isIntraday
     barsAfterSweep += 1
 
 if barsAfterSweep >= maxBarsAfterSweep
     waitingForGap := false
     waitingForInversion := false
+    collectingGaps := false
+    gapSeriesCount := 0
     sweepType := na
     sweepSource := na
     sweepBar := na
@@ -676,6 +743,8 @@ if waitingForInversion and barClosed and isIntraday and inEntryWin and strategy.
                 else if sweepSource == "1hSwingHigh"
                     swingHigh1HTraded := true
                 waitingForInversion := false
+                collectingGaps := false
+                gapSeriesCount := 0
                 sweepType := na
                 sweepSource := na
                 gapTop := na
@@ -720,6 +789,8 @@ if waitingForInversion and barClosed and isIntraday and inEntryWin and strategy.
                 else if sweepSource == "1hSwingLow"
                     swingLow1HTraded := true
                 waitingForInversion := false
+                collectingGaps := false
+                gapSeriesCount := 0
                 sweepType := na
                 sweepSource := na
                 gapTop := na
@@ -784,6 +855,8 @@ if strategy.position_size < 0
 if afterCutoff
     waitingForGap := false
     waitingForInversion := false
+    collectingGaps := false
+    gapSeriesCount := 0
     sweepType := na
     sweepSource := na
     sweepBar := na

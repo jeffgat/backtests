@@ -683,6 +683,10 @@ setupTP1 = (asia_longSetupActive and asia_longSetupActive[1] == false) ? asia_lo
 
 setupTP2 = (asia_longSetupActive and asia_longSetupActive[1] == false) ? asia_longTargetStored : (asia_shortSetupActive and asia_shortSetupActive[1] == false) ? asia_shortTargetStored : (ny_longSetupActive and ny_longSetupActive[1] == false) ? ny_longTargetStored : (ny_shortSetupActive and ny_shortSetupActive[1] == false) ? ny_shortTargetStored : na
 
+setupHalfQty = (asia_longSetupActive and asia_longSetupActive[1] == false) ? asia_longHalfQty : (asia_shortSetupActive and asia_shortSetupActive[1] == false) ? asia_shortHalfQty : (ny_longSetupActive and ny_longSetupActive[1] == false) ? ny_longHalfQty : (ny_shortSetupActive and ny_shortSetupActive[1] == false) ? ny_shortHalfQty : na
+
+setupSingleContract = (asia_longSetupActive and asia_longSetupActive[1] == false) ? asia_longSingleContract : (asia_shortSetupActive and asia_shortSetupActive[1] == false) ? asia_shortSingleContract : (ny_longSetupActive and ny_longSetupActive[1] == false) ? ny_longSingleContract : (ny_shortSetupActive and ny_shortSetupActive[1] == false) ? ny_shortSingleContract : false
+
 plot(currentTP1, "TP1", display=display.none)
 plot(currentTP2, "TP2", display=display.none)
 plot(currentStop, "StopLoss", display=display.none)
@@ -707,13 +711,35 @@ tp1HitLong = (strategy.position_size > 0 and ((activeSession == "asia" and asia_
 tp1HitShort = (strategy.position_size < 0 and ((activeSession == "asia" and asia_shortBEActive and not asia_shortBEActive[1]) or (activeSession == "ny" and ny_shortBEActive and not ny_shortBEActive[1])))
 
 if longEntrySignal
-    alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP1) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+    if setupSingleContract
+        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+    else
+        // TP1 tranche (higher half)
+        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentQty - setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP1) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+        // TP2 tranche (lower half, runner)
+        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "cancel": false}', alert.freq_once_per_bar_close)
 if shortEntrySignal
-    alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP1) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+    if setupSingleContract
+        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+    else
+        // TP1 tranche (higher half)
+        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentQty - setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP1) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+        // TP2 tranche (lower half, runner)
+        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "cancel": false}', alert.freq_once_per_bar_close)
 if tp1HitLong
-    alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentHalfQty) + ', "takeProfit": {"limitPrice": ' + str.tostring(currentTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(currentBE) + '}}', alert.freq_once_per_bar_close)
+    // Cancel existing bracket orders
+    alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
+    // Replace stop at breakeven (delayed to ensure cancel processes first)
+    alert('{"ticker": "MNQ", "action": "sell", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 2}', alert.freq_once_per_bar_close)
+    // Replace TP at TP2 (delayed further)
+    alert('{"ticker": "MNQ", "action": "sell", "orderType": "limit", "limitPrice": ' + str.tostring(currentTP2) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 4}', alert.freq_once_per_bar_close)
 if tp1HitShort
-    alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentHalfQty) + ', "takeProfit": {"limitPrice": ' + str.tostring(currentTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(currentBE) + '}}', alert.freq_once_per_bar_close)
+    // Cancel existing bracket orders
+    alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
+    // Replace stop at breakeven (delayed to ensure cancel processes first)
+    alert('{"ticker": "MNQ", "action": "buy", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 2}', alert.freq_once_per_bar_close)
+    // Replace TP at TP2 (delayed further)
+    alert('{"ticker": "MNQ", "action": "buy", "orderType": "limit", "limitPrice": ' + str.tostring(currentTP2) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 4}', alert.freq_once_per_bar_close)
 
 // ----------------------------------------------------------------------------------------
 // Visuals - ORB Lines
