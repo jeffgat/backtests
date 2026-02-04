@@ -1,155 +1,140 @@
-// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
-// https://creativecommons.org/licenses/by-nc-sa/4.0/
-// © BigBeluga
+//@version=6
+strategy(
+     title              = "TP/SL Alert Test",
+     overlay            = true,
+     initial_capital    = 100000,
+     pyramiding         = 0,
+     margin_long        = 0,
+     margin_short       = 0,
+     commission_type    = strategy.commission.cash_per_contract,
+     commission_value   = 0.05,
+    calc_on_every_tick = true,
+     process_orders_on_close = true,
+     use_bar_magnifier  = true,
+     fill_orders_on_standard_ohlc = false
+)
 
-//@version=5
-indicator("FVG Order Blocks [BigBeluga]", overlay=true, max_boxes_count=500, max_lines_count=500, max_bars_back=2000)
+// ----------------------------------------------------------------------------------------
+// Inputs
+// ----------------------------------------------------------------------------------------
+stopPts      = input.float(10.0, "Stop Loss (points)", step=1.0, group="Levels")
+tp1Pts       = input.float(10.0, "TP1 (points)", step=1.0, group="Levels")
+tp2Pts       = input.float(20.0, "TP2 (points)", step=1.0, group="Levels")
+qty          = input.int(2, "Contracts", minval=1, group="Sizing")
+beOffsetTicks = input.int(4, "BE Offset (ticks)", step=1, group="Sizing")
 
-// ＩＮＰＵＴＳ ========================================================================================================{
+// ----------------------------------------------------------------------------------------
+// State
+// ----------------------------------------------------------------------------------------
+var float entryPrice  = na
+var bool  beActive    = false
+var float filledEntry = na
+var bool  tp1Alerted  = false
+var float prevPos     = 0
 
-//@variable: Lookback period for detecting imbalances
-int loockback    = 2000
-//@variable: Filter to determine significant imbalances as a percentage
-float filter       = input.float(0.5, "Filter Gaps by %", minval=0, maxval=100, step=0.1)
-//@variable: Toggle to show/hide Order Blocks
-bool show_imb    = input.bool(true, "Fair Value Gaps", inline="1")
-//@variable: Maximum number of levels to display
-int box_amount   = input.int(6, "Blocks Amount")
-//@variable: Toggle to show/hide broken Order Blocks
-bool show_broken = input.bool(false, "Broken Blocks")
-bool show_signal = input.bool(false, "Order Blocks Signals")
+barClosed  = barstate.isconfirmed
+beOffset   = beOffsetTicks * syminfo.mintick
+halfQty    = math.floor(qty / 2)
+isSingle   = qty <= 1
+tp1Touch   = strategy.position_size > 0 and not na(entryPrice) and high >= entryPrice + tp1Pts
 
-//@variable: Color for bullish Order Blocks
-color col_bull   = input.color(#14be94, "Color +/-", inline="2")
-//@variable: Color for bearish Order Blocks
-color col_bear   = input.color(color.rgb(194, 25, 25), "", inline="2")
+// Reset when flat
+if strategy.position_size == 0
+    beActive    := false
+    filledEntry := na
+    entryPrice  := na
+    tp1Alerted  := false
 
-// Arrays to store boxes
-var boxes1 = array.new<box>(10, box(na))  // Bullish boxes
-var boxes2 = array.new<box>(10, box(na))  // Bearish boxes
+// ----------------------------------------------------------------------------------------
+// Entry - market buy on every confirmed bar close if flat
+// ----------------------------------------------------------------------------------------
+if barClosed and strategy.position_size == 0
+    entryPrice := close
+    strategy.entry("L", strategy.long, qty=qty)
 
-// Boolean variables to identify bullish and bearish gaps
-var bool isBull_gap = na  
-var bool isBear_gap = na  
+// Track actual fill price
+if strategy.position_size > 0 and na(filledEntry)
+    filledEntry := strategy.opentrades.entry_price(0)
 
-// Box variables for the current bullish and bearish levels
-var box1 = box(na)
-var box2 = box(na)
-// }
+// ----------------------------------------------------------------------------------------
+// BE detection (mirrors HEAD_orb_prod.pine logic)
+// ----------------------------------------------------------------------------------------
+if strategy.position_size > 0 and not beActive
+    if isSingle
+        if tp1Touch
+            beActive := true
+    else
+        positionReduced = strategy.position_size < qty and not na(filledEntry)
+        if positionReduced or tp1Touch
+            beActive := true
 
+// ----------------------------------------------------------------------------------------
+// Exit orders
+// ----------------------------------------------------------------------------------------
+if strategy.position_size > 0
+    stopLevel = not na(entryPrice) ? entryPrice - stopPts : na
+    tp1Level  = not na(entryPrice) ? entryPrice + tp1Pts  : na
+    tp2Level  = not na(entryPrice) ? entryPrice + tp2Pts  : na
+    beStopPrice = (not na(filledEntry) ? filledEntry : entryPrice) + beOffset
+    finalStop = beActive ? beStopPrice : stopLevel
 
-// ＣＡＬＣＵＬＡＴＩＯＮＳ ============================================================================================={
+    if isSingle
+        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=tp2Level, comment_loss=beActive ? "be" : "sl", comment_profit="tp2")
+    else
+        strategy.exit("L-P", from_entry="L", qty=halfQty, stop=finalStop, limit=tp1Level, comment_loss=beActive ? "be" : "sl", comment_profit="tp1")
+        strategy.exit("L-F", from_entry="L", stop=finalStop, limit=tp2Level, comment_loss=beActive ? "be" : "sl", comment_profit="tp2")
 
-// Normalized ATR (Average True Range)
-series float atr = ta.atr(200)
+// ----------------------------------------------------------------------------------------
+// Alert conditions
+// ----------------------------------------------------------------------------------------
+entrySignal = barClosed and strategy.position_size == 0
+tp1Hit      = not isSingle and not tp1Alerted and (
+     (strategy.position_size > 0 and strategy.position_size < strategy.position_size[1]) or
+     tp1Touch
+ )
 
-// Imbalance Filters
-float filt_up      = (low-high[2])/low*100  // Filter for bullish Imbalance
-float filt_dn      = (low[2]-high) / low[2] *100   // Filter for bearish Imbalance
+// ----------------------------------------------------------------------------------------
+// Entry alert (mirrors HEAD_orb_prod.pine new architecture)
+// ----------------------------------------------------------------------------------------
+if entrySignal
+    stopPrice = close - stopPts
+    if isSingle
+        tp2Price = close + tp2Pts
+        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(qty) + ', "takeProfit": {"limitPrice": ' + str.tostring(tp2Price) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(stopPrice) + '}}', alert.freq_once_per_bar_close)
+    else
+        // Multi contract: full bracket (TP2 + stop), script manages partial exit at TP1
+        tp2Price = close + tp2Pts
+        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(qty) + ', "takeProfit": {"limitPrice": ' + str.tostring(tp2Price) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(stopPrice) + '}}', alert.freq_once_per_bar_close)
 
-max_up = ta.highest(filt_up, 200)
-max_dn = ta.highest(filt_dn, 200)
+// ----------------------------------------------------------------------------------------
+// TP1 hit alerts (mirrors HEAD_orb_prod.pine new architecture)
+// ----------------------------------------------------------------------------------------
+if tp1Hit and not isSingle
+    beStopPrice = (not na(filledEntry) ? filledEntry : entryPrice) + beOffset
+    tp2Price    = not na(entryPrice) ? entryPrice + tp2Pts : na
+    // Partial exit at market
+    alert('{"ticker": "MNQ", "action": "exit", "quantity": ' + str.tostring(halfQty) + '}', alert.freq_once_per_bar)
+    // Cancel old bracket stop + place BE stop for runner
+    alert('{"ticker": "MNQ", "action": "sell", "orderType": "stop", "stopPrice": ' + str.tostring(beStopPrice) + ', "quantity": ' + str.tostring(halfQty) + ', "sentiment": "flat", "delay": 3}', alert.freq_once_per_bar)
+    // Place TP2 limit for runner (cancel=false to preserve BE stop)
+    alert('{"ticker": "MNQ", "action": "sell", "orderType": "limit", "limitPrice": ' + str.tostring(tp2Price) + ', "quantity": ' + str.tostring(halfQty) + ', "sentiment": "flat", "cancel": false, "delay": 5}', alert.freq_once_per_bar)
+    tp1Alerted := true
 
-// Detect gaps and create boxes for bullish and bearish imbalances
-if barstate.isconfirmed and last_bar_index - bar_index < loockback
-    isBull_gap := high[2] < low and high[2] < high[1] and low[2] < low and filt_up > filter
-    isBear_gap := low[2] > high and low[2] > low[1] and high[2] > high and filt_dn > filter
+// ----------------------------------------------------------------------------------------
+// final exit alert - flatten and cancel remaining orders
+// ----------------------------------------------------------------------------------------
+flatNow = prevPos != 0 and strategy.position_size == 0
+if flatNow
+    alert('{"ticker": "MNQ", "action": "exit"}', alert.freq_once_per_bar)
 
-// Logic for Bullish Imbalance
-if isBull_gap
-    if show_imb
-        // Create a temporary box representing the gap
-        box.new(bar_index-1, low, bar_index + 5, high[2], na, 0, 
-             bgcolor    = color.from_gradient(filt_up, 0, max_up, color.new(chart.fg_color, 90), color.new(chart.fg_color, 70)),
-             text       = str.tostring(filt_up, format.percent),
-             text_color = chart.fg_color
-             )
+prevPos := strategy.position_size
 
-    box1 := box.new(bar_index-1, high[2], last_bar_index, high[2] - atr, col_bull, 1, 
-                 bgcolor     = color.from_gradient(filt_up, 0, max_up, na, color.new(col_bull, 70)), 
-                 text        = str.tostring(filt_up, format.percent), 
-                 text_size   = size.small,
-                 text_color  = chart.fg_color, 
-                 text_halign = text.align_right)
-    boxes1.push(box1)
+// ----------------------------------------------------------------------------------------
+// Visuals
+// ----------------------------------------------------------------------------------------
+plotEntry = strategy.position_size > 0 and not na(entryPrice) ? entryPrice : na
+plot(plotEntry, "Entry", color=color.white, style=plot.style_linebr, linewidth=1)
+plot(not na(plotEntry) ? entryPrice - stopPts : na, "Stop", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(not na(plotEntry) ? entryPrice + tp1Pts : na, "TP1", color=color.orange, style=plot.style_linebr, linewidth=1)
+plot(not na(plotEntry) ? entryPrice + tp2Pts : na, "TP2", color=color.green, style=plot.style_linebr, linewidth=1)
 
-// Logic for Bearish Imbalance
-if isBear_gap
-    if show_imb
-        // Create a temporary box representing the gap
-        box.new(bar_index-1, low[2], bar_index + 5, high, na, 0,
-             bgcolor    = color.from_gradient(filt_dn, 0, max_dn, color.new(chart.fg_color, 90), color.new(chart.fg_color, 70)),
-             text       = "-"+str.tostring(filt_dn, format.percent),
-             text_color = chart.fg_color
-             )
-
-    box2 := box.new(bar_index-1, low[2] + atr, last_bar_index, low[2], col_bear, 1,
-                 bgcolor     = color.from_gradient(filt_dn, 0, max_dn, na, color.new(col_bear, 70)),
-                 text        =str.tostring(filt_dn, format.percent),
-                 text_size   =size.small,
-                 text_color  = chart.fg_color, 
-                 text_halign = text.align_right)
-    boxes2.push(box2)
-
-// Adjust the position of the boxes as new bars are added
-if barstate.islast
-    for box_id in boxes1
-        box.set_right(box_id, bar_index + 15)
-    for box_id in boxes2
-        box.set_right(box_id, bar_index + 15)
-
-// Logic to handle broken levels
-for box_id in boxes1
-    if high < box.get_bottom(box_id)
-        box.set_border_width(box_id, 0)
-        box.set_bgcolor(box_id, color.new(chart.fg_color, 85))
-
-        if not show_broken
-            box.delete(box_id)
-            boxes1.remove(boxes1.indexof(box_id))
-
-    if low > box.get_top(box_id) and low[1] <= box.get_top(box_id) and not isBull_gap and show_signal
-        label.new(bar_index-1, low[1], "︽", color = color(na), textcolor = col_bull, style = label.style_label_up)
-
-    for box_id1 in boxes1
-        top1 = box_id1.get_top()
-        top  = box_id.get_top()
-        bottom1 = box_id1.get_bottom()
-        bottom  = box_id.get_bottom()
-
-        if top1 < top and top1 > bottom
-            box.delete(box_id)
-            boxes1.remove(boxes1.indexof(box_id))
-
-
-for box_id in boxes2
-    if low > box.get_top(box_id)
-        box.set_border_width(box_id, 0)
-        box.set_bgcolor(box_id, color.new(chart.fg_color, 85))
-
-        if not show_broken
-            box.delete(box_id)
-            boxes2.remove(boxes2.indexof(box_id))
-
-
-    if high < box.get_bottom(box_id) and high[1] >= box.get_bottom(box_id) and not isBear_gap and show_signal
-        label.new(bar_index-1, high[1], "﹀", color = color(na), textcolor = col_bear, style = label.style_label_down)
-
-    for box_id1 in boxes2
-        top1 = box_id1.get_top()
-        top  = box_id.get_top()
-        bottom1 = box_id1.get_bottom()
-        bottom  = box_id.get_bottom()
-
-        if top1 < top and top1 > bottom
-            box.delete(box_id)
-            boxes2.remove(boxes2.indexof(box_id))
-
-// Limit the number of displayed boxes to the specified amount
-if boxes1.size() >= box_amount
-    box.delete(boxes1.shift())
-if boxes2.size() >= box_amount
-    box.delete(boxes2.shift())
-
-
-// }

@@ -2,12 +2,13 @@
 strategy(
      title              = "ORB V4 Bot NY/Asia",
      overlay            = true,
-     initial_capital    = 100000,
+     initial_capital    = 50000,
      pyramiding         = 0,
      margin_long        = 0,
      margin_short       = 0,
      commission_type    = strategy.commission.cash_per_contract,
      commission_value   = 0.05,
+    calc_on_every_tick = true,
      process_orders_on_close = true,
      use_bar_magnifier  = true,
      fill_orders_on_standard_ohlc = false
@@ -16,7 +17,7 @@ strategy(
 // ----------------------------------------------------------------------------------------
 // Inputs - Shared Risk Settings
 // ----------------------------------------------------------------------------------------
-riskUsd      = input.float(1000, "Risk per trade ($)", step=50, group="Risk Settings")
+riskUsd      = input.float(500, "Risk per trade ($)", step=50, group="Risk Settings")
 rr           = input.float(2.5, "Reward/Risk", step=0.25, group="Risk Settings")
 tp1Ratio     = input.float(0.5, "Partial TP & BE Level (0.5 = 50% of target)", step=0.1, minval=0.1, maxval=0.9, group="Risk Settings")
 minQty       = input.float(1.0, "Min Qty", step=0.1, group="Risk Settings")
@@ -178,6 +179,8 @@ var int ny_shortSetupBar = na
 
 // Track which session owns current position
 var string activeSession = na
+var bool  tp1Alerted = false
+var float prevPos = 0
 
 // ----------------------------------------------------------------------------------------
 // Reset on new day
@@ -485,6 +488,7 @@ if strategy.position_size < 0 and na(ny_shortFilledEntry) and ny_shortSetupActiv
 // Reset active session when flat
 if strategy.position_size == 0
     activeSession := na
+    tp1Alerted := false
 
 // ----------------------------------------------------------------------------------------
 // Update breakeven state - Asia
@@ -596,6 +600,8 @@ if strategy.position_size < 0 and activeSession == "ny"
 // Cancel pending orders after cutoff - Asia
 // ----------------------------------------------------------------------------------------
 if asiaAfterCutoff
+    if (asia_longSetupActive or asia_shortSetupActive) and strategy.position_size == 0
+        alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
     strategy.cancel("AL")
     strategy.cancel("AS")
     asia_longSetupActive := false
@@ -606,6 +612,8 @@ if asiaAfterCutoff
     asia_shortSetupBar := na
 
 if not inAsiaRTH
+    if (asia_longSetupActive or asia_shortSetupActive) and strategy.position_size == 0
+        alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
     strategy.cancel("AL")
     strategy.cancel("AS")
     asia_longSetupActive := false
@@ -619,6 +627,8 @@ if not inAsiaRTH
 // Cancel pending orders after cutoff - NY
 // ----------------------------------------------------------------------------------------
 if nyAfterCutoff
+    if (ny_longSetupActive or ny_shortSetupActive) and strategy.position_size == 0
+        alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
     strategy.cancel("NL")
     strategy.cancel("NS")
     ny_longSetupActive := false
@@ -629,6 +639,8 @@ if nyAfterCutoff
     ny_shortSetupBar := na
 
 if not inNyRTH
+    if (ny_longSetupActive or ny_shortSetupActive) and strategy.position_size == 0
+        alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
     strategy.cancel("NL")
     strategy.cancel("NS")
     ny_longSetupActive := false
@@ -673,6 +685,7 @@ currentQty = (asia_longSetupActive and asia_longSetupActive[1] == false) ? asia_
 
 // Half quantity for partial exits
 currentHalfQty = strategy.position_size > 0 ? (activeSession == "asia" ? asia_longHalfQty : ny_longHalfQty) : strategy.position_size < 0 ? (activeSession == "asia" ? asia_shortHalfQty : ny_shortHalfQty) : na
+currentSingleContract = strategy.position_size > 0 ? (activeSession == "asia" ? asia_longSingleContract : ny_longSingleContract) : strategy.position_size < 0 ? (activeSession == "asia" ? asia_shortSingleContract : ny_shortSingleContract) : false
 
 // Entry prices for new setups (needed at alert time, before position opens)
 setupEntry = (asia_longSetupActive and asia_longSetupActive[1] == false) ? asia_longEntryStored : (asia_shortSetupActive and asia_shortSetupActive[1] == false) ? asia_shortEntryStored : (ny_longSetupActive and ny_longSetupActive[1] == false) ? ny_longEntryStored : (ny_shortSetupActive and ny_shortSetupActive[1] == false) ? ny_shortEntryStored : na
@@ -706,40 +719,77 @@ plot(setupTP2, "SetupTP2", display=display.none)
 longEntrySignal = ((asia_longSetupActive and asia_longSetupActive[1] == false) or (ny_longSetupActive and ny_longSetupActive[1] == false))
 shortEntrySignal = ((asia_shortSetupActive and asia_shortSetupActive[1] == false) or (ny_shortSetupActive and ny_shortSetupActive[1] == false))
 
-// TP1 hit - fire when BE becomes active (position still open)
-tp1HitLong = (strategy.position_size > 0 and ((activeSession == "asia" and asia_longBEActive and not asia_longBEActive[1]) or (activeSession == "ny" and ny_longBEActive and not ny_longBEActive[1])))
-tp1HitShort = (strategy.position_size < 0 and ((activeSession == "asia" and asia_shortBEActive and not asia_shortBEActive[1]) or (activeSession == "ny" and ny_shortBEActive and not ny_shortBEActive[1])))
+// TP1 hit - fire on live touch or position reduction (position still open)
+tp1TouchLong = strategy.position_size > 0 and not na(currentTP1) and high >= currentTP1
+tp1TouchShort = strategy.position_size < 0 and not na(currentTP1) and low <= currentTP1
+tp1HitLong = (strategy.position_size > 0 and not currentSingleContract and not tp1Alerted) and (
+    (strategy.position_size < strategy.position_size[1]) or tp1TouchLong
+)
+tp1HitShort = (strategy.position_size < 0 and not currentSingleContract and not tp1Alerted) and (
+    (math.abs(strategy.position_size) < math.abs(strategy.position_size[1])) or tp1TouchShort
+)
+tp1HitSingleLong = (strategy.position_size > 0 and currentSingleContract and not tp1Alerted) and tp1TouchLong
+tp1HitSingleShort = (strategy.position_size < 0 and currentSingleContract and not tp1Alerted) and tp1TouchShort
 
 if longEntrySignal
+    // Flatten any stale broker position before sending new entry
+    alert('{"ticker": "MNQ", "action": "exit"}', alert.freq_once_per_bar_close)
     if setupSingleContract
-        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+        // Single contract: full bracket (stop + TP), broker manages everything
+        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "delay": 3}', alert.freq_once_per_bar_close)
     else
-        // TP1 tranche (higher half)
-        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentQty - setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP1) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
-        // TP2 tranche (lower half, runner)
-        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "cancel": false}', alert.freq_once_per_bar_close)
+        // Multi contract: full bracket (TP2 + stop), script manages partial exit at TP1
+        alert('{"ticker": "MNQ", "action": "buy", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "delay": 3}', alert.freq_once_per_bar_close)
 if shortEntrySignal
+    // Flatten any stale broker position before sending new entry
+    alert('{"ticker": "MNQ", "action": "exit"}', alert.freq_once_per_bar_close)
     if setupSingleContract
-        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
+        // Single contract: full bracket (stop + TP), broker manages everything
+        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "delay": 3}', alert.freq_once_per_bar_close)
     else
-        // TP1 tranche (higher half)
-        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentQty - setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP1) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}}', alert.freq_once_per_bar_close)
-        // TP2 tranche (lower half, runner)
-        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(setupHalfQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "cancel": false}', alert.freq_once_per_bar_close)
+        // Multi contract: full bracket (TP2 + stop), script manages partial exit at TP1
+        alert('{"ticker": "MNQ", "action": "sell", "quantity": ' + str.tostring(currentQty) + ', "price": ' + str.tostring(setupEntry) + ', "takeProfit": {"limitPrice": ' + str.tostring(setupTP2) + '}, "stopLoss": {"type": "stop", "stopPrice": ' + str.tostring(setupStop) + '}, "delay": 3}', alert.freq_once_per_bar_close)
 if tp1HitLong
-    // Cancel existing bracket orders
-    alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
-    // Replace stop at breakeven (delayed to ensure cancel processes first)
-    alert('{"ticker": "MNQ", "action": "sell", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 2}', alert.freq_once_per_bar_close)
-    // Replace TP at TP2 (delayed further)
-    alert('{"ticker": "MNQ", "action": "sell", "orderType": "limit", "limitPrice": ' + str.tostring(currentTP2) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 4}', alert.freq_once_per_bar_close)
+    // Partial exit at market - close TP1 tranche
+    alert('{"ticker": "MNQ", "action": "exit", "quantity": ' + str.tostring(currentHalfQty) + '}', alert.freq_once_per_bar_close)
+    // Cancel old bracket stop + place BE stop for runner (default cancel=true clears old orders)
+    alert('{"ticker": "MNQ", "action": "sell", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "delay": 3}', alert.freq_once_per_bar_close)
+    // Place TP2 limit for runner (cancel=false to preserve BE stop)
+    alert('{"ticker": "MNQ", "action": "sell", "orderType": "limit", "limitPrice": ' + str.tostring(currentTP2) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 5}', alert.freq_once_per_bar_close)
+    tp1Alerted := true
 if tp1HitShort
-    // Cancel existing bracket orders
-    alert('{"ticker": "MNQ", "action": "cancel"}', alert.freq_once_per_bar_close)
-    // Replace stop at breakeven (delayed to ensure cancel processes first)
-    alert('{"ticker": "MNQ", "action": "buy", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 2}', alert.freq_once_per_bar_close)
-    // Replace TP at TP2 (delayed further)
-    alert('{"ticker": "MNQ", "action": "buy", "orderType": "limit", "limitPrice": ' + str.tostring(currentTP2) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 4}', alert.freq_once_per_bar_close)
+    // Partial exit at market - close TP1 tranche
+    alert('{"ticker": "MNQ", "action": "exit", "quantity": ' + str.tostring(currentHalfQty) + '}', alert.freq_once_per_bar_close)
+    // Cancel old bracket stop + place BE stop for runner (default cancel=true clears old orders)
+    alert('{"ticker": "MNQ", "action": "buy", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "delay": 3}', alert.freq_once_per_bar_close)
+    // Place TP2 limit for runner (cancel=false to preserve BE stop)
+    alert('{"ticker": "MNQ", "action": "buy", "orderType": "limit", "limitPrice": ' + str.tostring(currentTP2) + ', "quantity": ' + str.tostring(currentHalfQty) + ', "sentiment": "flat", "cancel": false, "delay": 5}', alert.freq_once_per_bar_close)
+    tp1Alerted := true
+if tp1HitSingleLong
+    alert('{"ticker": "MNQ", "action": "sell", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentQty) + ', "sentiment": "flat", "delay": 3}', alert.freq_once_per_bar_close)
+    tp1Alerted := true
+if tp1HitSingleShort
+    alert('{"ticker": "MNQ", "action": "buy", "orderType": "stop", "stopPrice": ' + str.tostring(currentBE) + ', "quantity": ' + str.tostring(currentQty) + ', "sentiment": "flat", "delay": 3}', alert.freq_once_per_bar_close)
+    tp1Alerted := true
+
+// ----------------------------------------------------------------------------------------
+// Final exit alert - flatten and cancel remaining orders
+// ----------------------------------------------------------------------------------------
+flatNow = prevPos != 0 and strategy.position_size == 0
+if flatNow
+    alert('{"ticker": "MNQ", "action": "exit"}', alert.freq_once_per_bar)
+
+prevPos := strategy.position_size
+
+// ----------------------------------------------------------------------------------------
+// EOD Flat Alerts - ensure broker position closes at session end
+// ----------------------------------------------------------------------------------------
+if inAsiaFlatWin and strategy.position_size != 0 and activeSession == "asia"
+    alert('{"ticker": "MNQ", "action": "exit"}', alert.freq_once_per_bar_close)
+
+nyFlatAlertNow = isNyHalfDay ? inNyHalfDayFlatWin : inNyFlatWin
+if nyFlatAlertNow and strategy.position_size != 0 and activeSession == "ny"
+    alert('{"ticker": "MNQ", "action": "exit"}', alert.freq_once_per_bar_close)
 
 // ----------------------------------------------------------------------------------------
 // Visuals - ORB Lines
