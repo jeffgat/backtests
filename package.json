@@ -2,6 +2,6 @@
   "name": "backtests",
   "private": true,
   "scripts": {
-    "push": "./scripts/commit-push.sh"
+    "commit": "./scripts/commit-push.sh"
   }
 }

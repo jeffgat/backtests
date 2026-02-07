@@ -1,0 +1,51 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Atlas
+
+//@version=6
+indicator("Atlas ATR", overlay=true)
+
+// ————— Inputs —————
+atrLength    = input.int(14, "ATR Length", minval=1, group="ATR")
+globexHour   = input.int(18, "Globex Open Hour (ET)", minval=0, maxval=23, group="ATR", tooltip="Hour in Eastern Time when the Globex session opens (default 18 = 6:00 PM ET)")
+globexMinute = input.int(0, "Globex Open Minute", minval=0, maxval=59, group="ATR")
+posColor     = input.color(color.new(#29D398, 0), "Positive Color", group="Display")
+negColor     = input.color(color.new(#E95678, 0), "Negative Color", group="Display")
+textSize     = input.string("Small", "Text Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="Display")
+tablePos     = input.string("Top Right", "Position", options=["Top Right", "Bottom Right", "Bottom Left"], group="Display")
+openLabel    = input.string("Open", "Open Label", group="Display")
+
+// ————— Text size mapping —————
+sizeVal = switch textSize
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    "Huge"   => size.huge
+
+// ————— Position mapping —————
+posVal = switch tablePos
+    "Top Right"    => position.top_right
+    "Bottom Right" => position.bottom_right
+    "Bottom Left"  => position.bottom_left
+
+// ————— Data —————
+dailyATR   = request.security(syminfo.tickerid, "D", ta.atr(atrLength)[1], lookahead=barmerge.lookahead_on)
+
+etHour     = hour(time, "America/New_York")
+etMinute   = minute(time, "America/New_York")
+isGlobexBar = etHour == globexHour and etMinute == globexMinute and (etHour != etHour[1] or etMinute != etMinute[1])
+
+var float globexOpen = na
+if isGlobexBar
+    globexOpen := open
+
+globexDist  = close - globexOpen
+globexPct   = dailyATR > 0 ? (globexDist / dailyATR) * 100 : 0.0
+globexSign  = globexDist >= 0 ? "+" : ""
+globexColor = globexDist >= 0 ? posColor : negColor
+
+// ————— Table —————
+var table atrTable = table.new(posVal, 1, 2, bgcolor=color.new(#1e222d, 10), border_width=1, border_color=color.new(#363a45, 0))
+if barstate.islast
+    table.cell(atrTable, 0, 0, "ATR(" + str.tostring(atrLength) + "): " + str.tostring(dailyATR, format.mintick), text_color=color.white, text_size=sizeVal)
+    table.cell(atrTable, 0, 1, openLabel + ": " + globexSign + str.tostring(globexDist, format.mintick) + " (" + globexSign + str.tostring(globexPct, "#.0") + "% ATR)", text_color=globexColor, text_size=sizeVal)
