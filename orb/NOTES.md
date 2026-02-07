@@ -1,3 +1,8 @@
+# NOT YET, BUT SHOULD BE IMPLEMENTED. CHANGES TO PROD
+- implement ATR
+- size gaps in NY as 1.75% of the ATR
+- size gaps in asia as 0.25% of the ATR
+
 ## ideas
 - can we use ATR to create dynamic stops that scale with price? or is the 2 candle stop the best?
 - can we use ATR to optimize the gap size for which we enter on?
