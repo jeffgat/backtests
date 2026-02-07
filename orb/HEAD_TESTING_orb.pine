@@ -11,7 +11,9 @@ strategy(
      calc_on_every_tick = true,
      process_orders_on_close = true,
      use_bar_magnifier  = true,
-     fill_orders_on_standard_ohlc = false
+     fill_orders_on_standard_ohlc = false,
+     max_boxes_count    = 500,
+     max_labels_count   = 500
 )
 
 // ----------------------------------------------------------------------------------------
@@ -147,6 +149,15 @@ var float ny_shortFilledEntry = na
 var int ny_longSetupBar  = na
 var int ny_shortSetupBar = na
 
+var float ny_longFvgTopStored = na
+var float ny_longFvgBotStored = na
+var int   ny_longFvgStartBar  = na
+var string ny_longFvgText     = na
+var float ny_shortFvgTopStored = na
+var float ny_shortFvgBotStored = na
+var int   ny_shortFvgStartBar  = na
+var string ny_shortFvgText     = na
+
 // ----------------------------------------------------------------------------------------
 // Asia Session State Variables
 // ----------------------------------------------------------------------------------------
@@ -183,6 +194,15 @@ var float asia_shortFilledEntry = na
 
 var int asia_longSetupBar  = na
 var int asia_shortSetupBar = na
+
+var float asia_longFvgTopStored = na
+var float asia_longFvgBotStored = na
+var int   asia_longFvgStartBar  = na
+var string asia_longFvgText     = na
+var float asia_shortFvgTopStored = na
+var float asia_shortFvgBotStored = na
+var int   asia_shortFvgStartBar  = na
+var string asia_shortFvgText     = na
 
 // Track which session owns current position
 var string activeSession = na
@@ -221,6 +241,14 @@ if newDay
     ny_shortFilledEntry := na
     ny_longSetupBar := na
     ny_shortSetupBar := na
+    ny_longFvgTopStored := na
+    ny_longFvgBotStored := na
+    ny_longFvgStartBar  := na
+    ny_longFvgText      := na
+    ny_shortFvgTopStored := na
+    ny_shortFvgBotStored := na
+    ny_shortFvgStartBar  := na
+    ny_shortFvgText      := na
 
     // Asia reset
     asia_orbHigh := na
@@ -252,6 +280,14 @@ if newDay
     asia_shortFilledEntry := na
     asia_longSetupBar := na
     asia_shortSetupBar := na
+    asia_longFvgTopStored := na
+    asia_longFvgBotStored := na
+    asia_longFvgStartBar  := na
+    asia_longFvgText      := na
+    asia_shortFvgTopStored := na
+    asia_shortFvgBotStored := na
+    asia_shortFvgStartBar  := na
+    asia_shortFvgText      := na
 
     activeSession := na
 
@@ -384,6 +420,12 @@ if nyCanArmSetup and not ny_longFirstFvgFound and nyLongFVG
             ny_longSetupActive  := true
             ny_longFirstFvgFound := true
             ny_longSetupBar     := bar_index
+            ny_longFvgTopStored := longFvgTop
+            ny_longFvgBotStored := longFvgBottom
+            ny_longFvgStartBar  := bar_index - 2
+            fvgPts = longGapSize
+            fvgAtrPct = dailyATR > 0 ? (fvgPts / dailyATR) * 100 : 0.0
+            ny_longFvgText := str.tostring(fvgPts, format.mintick) + " pts (" + str.tostring(fvgAtrPct, "#.0") + "% ATR)"
 
 if nyCanArmSetup and not ny_shortFirstFvgFound and nyShortFVG
     rawStop = high[2]
@@ -409,6 +451,12 @@ if nyCanArmSetup and not ny_shortFirstFvgFound and nyShortFVG
             ny_shortSetupActive  := true
             ny_shortFirstFvgFound := true
             ny_shortSetupBar     := bar_index
+            ny_shortFvgTopStored := shortFvgTop
+            ny_shortFvgBotStored := shortFvgBottom
+            ny_shortFvgStartBar  := bar_index - 2
+            fvgPts = shortGapSize
+            fvgAtrPct = dailyATR > 0 ? (fvgPts / dailyATR) * 100 : 0.0
+            ny_shortFvgText := str.tostring(fvgPts, format.mintick) + " pts (" + str.tostring(fvgAtrPct, "#.0") + "% ATR)"
 
 // ----------------------------------------------------------------------------------------
 // Activate setup - Asia Session
@@ -439,6 +487,12 @@ if asiaCanArmSetup and not asia_longFirstFvgFound and asiaLongFVG
             asia_longSetupActive  := true
             asia_longFirstFvgFound := true
             asia_longSetupBar     := bar_index
+            asia_longFvgTopStored := longFvgTop
+            asia_longFvgBotStored := longFvgBottom
+            asia_longFvgStartBar  := bar_index - 2
+            fvgPts = longGapSize
+            fvgAtrPct = dailyATR > 0 ? (fvgPts / dailyATR) * 100 : 0.0
+            asia_longFvgText := str.tostring(fvgPts, format.mintick) + " pts (" + str.tostring(fvgAtrPct, "#.0") + "% ATR)"
 
 if asiaCanArmSetup and not asia_shortFirstFvgFound and asiaShortFVG
     rawStop = high[2]
@@ -464,6 +518,12 @@ if asiaCanArmSetup and not asia_shortFirstFvgFound and asiaShortFVG
             asia_shortSetupActive  := true
             asia_shortFirstFvgFound := true
             asia_shortSetupBar     := bar_index
+            asia_shortFvgTopStored := shortFvgTop
+            asia_shortFvgBotStored := shortFvgBottom
+            asia_shortFvgStartBar  := bar_index - 2
+            fvgPts = shortGapSize
+            fvgAtrPct = dailyATR > 0 ? (fvgPts / dailyATR) * 100 : 0.0
+            asia_shortFvgText := str.tostring(fvgPts, format.mintick) + " pts (" + str.tostring(fvgAtrPct, "#.0") + "% ATR)"
 
 // ----------------------------------------------------------------------------------------
 // Track actual entry fill price and active session
@@ -674,9 +734,9 @@ if barstate.islast
 // NY ORB lines (green)
 plotNyORB = enableNY and inNyRTH and inNyEntryWin
 plot(plotNyORB ? ny_orbHigh : na, "NY ORB High", style=plot.style_linebr, linewidth=2, color=color.new(#18b79c, 0))
-plot(plotNyORB ? ny_orbLow  : na, "NY ORB Low",  style=plot.style_linebr, linewidth=2, color=color.new(#5d606b, 0))
+plot(plotNyORB ? ny_orbLow  : na, "NY ORB Low",  style=plot.style_linebr, linewidth=2, color=color.new(#94E3DA, 0))
 
 // Asia ORB lines (blue)
 plotAsiaORB = enableAsia and inAsiaRTH and inAsiaEntryWin
 plot(plotAsiaORB ? asia_orbHigh : na, "Asia ORB High", style=plot.style_linebr, linewidth=2, color=color.new(#2196F3, 0))
-plot(plotAsiaORB ? asia_orbLow  : na, "Asia ORB Low",  style=plot.style_linebr, linewidth=2, color=color.new(#64B5F6, 0))
+plot(plotAsiaORB ? asia_orbLow  : na, "Asia ORB Low",  style=plot.style_linebr, linewidth=2, color=color.new(#A5DFFA, 0))
