@@ -70,9 +70,9 @@ tp1LineStyle   = styleToLine(tp1Style)
 tp2LineStyle   = styleToLine(tp2Style)
 
 // ============================================================================
-// SAFETY: intended for 5m charts
+// SAFETY: intended for intraday charts (1h and under)
 // ============================================================================
-is5m = timeframe.isintraday and timeframe.multiplier == 5
+is5m = timeframe.isintraday and timeframe.in_seconds() <= 3600
 barClosed = barstate.isconfirmed
 
 // ============================================================================
