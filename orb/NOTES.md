@@ -26,3 +26,20 @@
   - can this be used to create a reversal model? targeting back inside the OR after a breakout?
   - what other assets can we use this on?
   
+### ATR (gap sizes and stop losses), feb 7 2026
+- ATR for stop losses in NY from 2021 - 2026 is slightly bettern returns at DOUBLE the max DD
+- ATR for gaps in NY during this period is BETTER
+- ATR for stop lesses in asia from 2021 - 2026 is BETTER
+- ATR for gaps in asia during this period is basically the SAME
+
+- so in summary
+- 15% ATR SL NY
+- 5% ATR SL asia
+- 1.75% ATR gap NY
+- 0.7% ATR gap asia
+
+#### split tests
+
+a: atr based gaps, atr based stop losses
+b: atr based gaps, classic 2 candle stop losses
+c: fixed gaps, class 2 candle stop losses
